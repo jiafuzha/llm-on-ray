@@ -16,6 +16,7 @@
 #include <functional>
 #include <thread>
 #include <vector>
+// #include <stdexcept>
 #if BTLA_OPENMP
 #include <omp.h>
 #endif
@@ -46,7 +47,7 @@ class IThreading {
 class OMPThreading : public IThreading {
  public:
   explicit OMPThreading(int nthreads) : IThreading(nthreads, false) {
-    // printf("Using OMP\n");
+    // printf("Using OMP threads %d\n", nthreads);
     omp_set_num_threads(nthreads);
   }
   void parallel_for(const thread_func& func) override {
@@ -54,6 +55,7 @@ class OMPThreading : public IThreading {
 #pragma omp parallel
       {
         int tidx = omp_get_thread_num();
+        // printf("Using OMP thread idx %d\n", tidx);
         func(tidx);
       }
     } else {
@@ -61,8 +63,12 @@ class OMPThreading : public IThreading {
     }
   }
   virtual void set_threads(int nthreads) override {
+    
     mThreadNum = nthreads;
+    // if (mThreadNum != nthreads)  {
+      // printf("set OMP threads %d\n", nthreads);
     omp_set_num_threads(nthreads);
+    // }
   }
   virtual inline void sync(int tidx, int idx = 0) override {
     (void)(tidx);
@@ -77,7 +83,7 @@ class StdThreading : public IThreading {
  public:
   using Timer_T = utils::timer<utils::microseconds>;
   explicit StdThreading(int nthreads) : IThreading(nthreads, true) {
-    // printf("Using Std\n");
+    printf("Using Std\n");
     cr = &device::CpuRuntime::getInstance(nthreads);
     create_threads();
   }
@@ -125,6 +131,7 @@ class StdThreading : public IThreading {
     } else {
       func(0);
     }
+    // throw std::runtime_error("Not implemented");
   }
 
   void set_threads(int nthreads) override {

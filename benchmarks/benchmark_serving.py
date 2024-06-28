@@ -284,7 +284,7 @@ async def send_request(
 
     token_latencies_per_request: List[float] = []
 
-    timeout = aiohttp.ClientTimeout(total=3 * 3600)
+    timeout = aiohttp.ClientTimeout(total=5 * 3600)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         while True:
             async with session.post(api_url, headers=headers, json=pload) as response:
@@ -308,11 +308,18 @@ async def send_request(
                 if args.track_token_latency:
                     generate_len = len(tokenizer.encode(response_text))
                 else:
-                    response_content = json.loads(response_text)
-                    if isinstance(response_content, list):
-                        generate_len = response_content[0]["generate_length"]
+                    if vllm_engine:
+                        length_name = "num_generated_tokens"
                     else:
-                        generate_len = response_content["generate_length"]
+                        length_name = "generate_length"
+                    try:
+                        response_content = json.loads(response_text)
+                        if isinstance(response_content, list):
+                            generate_len = response_content[0][length_name]
+                        else:
+                            generate_len = response_content[length_name]
+                    except Exception:
+                        generate_len = None
             else:
                 if args.track_token_latency:
                     response_content = chunks[-2].decode("utf-8")
@@ -470,6 +477,7 @@ def main(args: argparse.Namespace):
         config["top_p"] = float(args.top_p)
     if args.top_k:
         config["top_k"] = float(args.top_k)
+    config["do_sample"] = args.do_sample
     # In order to align with vllm test parameters
     if args.vllm_engine:
         config["ignore_eos"] = True
@@ -726,6 +734,11 @@ if __name__ == "__main__":
         default=None,
         help="The number of highest probability vocabulary tokens to keep \
             for top-k-filtering.",
+    )
+    parser.add_argument(
+        "--do_sample",
+        action="store_true",
+        help="Whether or not to use sampling; use greedy decoding otherwise.",
     )
     parser.add_argument(
         "--vllm-engine",

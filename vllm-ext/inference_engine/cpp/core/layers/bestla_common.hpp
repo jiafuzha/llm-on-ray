@@ -26,7 +26,7 @@ namespace ne_bestla {
 class ne_threading {
  public:
   static bestla::parallel::IThreading* get() {
-#ifdef IE_USE_OMP
+#ifdef BTLA_ENABLE_OPENMP
     static bestla::parallel::OMPThreading DefaultThreading(4);
 #else
     static bestla::parallel::StdThreading DefaultThreading(4);

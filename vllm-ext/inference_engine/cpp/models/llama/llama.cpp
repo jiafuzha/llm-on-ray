@@ -159,8 +159,10 @@ static bool llama_model_eval_internal(model_context* ctx, const model_input* inp
     memcpy(static_cast<model_token*>(embd->data) + cpy_off, inputs[i].tokens, n_tokens[i] * ne_element_size(embd));
     cpy_off += n_tokens[i];
   }
+  
 
   struct ne_tensor* inpL = ne_get_rows(ctx0, model.others[0], embd);
+
   for (int il = 0; il < n_layer; ++il) {
     struct ne_tensor* inpSA = inpL;
 
@@ -175,6 +177,7 @@ static bool llama_model_eval_internal(model_context* ctx, const model_input* inp
       // cur = cur*attention_norm(broadcasted)
       cur = ne_mul(ctx0, cur, model.layers[il].norm[0]);
     }
+    
     ne_tensor *Qcur, *Kcur, *Vcur;
     if (bestla_fusion_QKV_f32f32_support(model.layers[il].attn[0]->data, model.layers[il].attn[1]->data,
                                          model.layers[il].attn[2]->data, seq_len_sum, model.layers[il].attn[0]->ne[1],
@@ -196,6 +199,7 @@ static bool llama_model_eval_internal(model_context* ctx, const model_input* inp
                            infer_bs);
       Vcur = ne_mul_mat(ctx0, model.layers[il].attn[2], cur);
     }
+
     if (concat_multi_seqs) {
       size_t off_sl = 0;
       // per_request rope
@@ -209,6 +213,7 @@ static bool llama_model_eval_internal(model_context* ctx, const model_input* inp
                        off_sl * n_head * ne_element_size(Qcur));
         ne_build_forward_expand(
             &gf, ne_rope_inplace(ctx0, Qcur_req, qk_n_past, n_rot, 0, 0, hparams.freq_base, hparams.freq_scale));
+        int64_t t002 = ne_time_us();
         struct ne_tensor* Kcur_req = ne_view_4d(
             ctx0, Kcur, head_size, n_head_kv, qk_sl, qk_bs, ne_element_size(Kcur) * head_size,
             ne_element_size(Kcur) * head_size * n_head_kv, ne_element_size(Kcur) * head_size * n_head_kv * qk_sl,
@@ -222,11 +227,12 @@ static bool llama_model_eval_internal(model_context* ctx, const model_input* inp
                              hparams.freq_scale);
       Kcur = ne_rope_inplace(  // n_ctx exceeds but it will be shift-roped back with cached K
           ctx0, Kcur, n_past, n_rot, 0, 0, hparams.freq_base, hparams.freq_scale);
-      // Vcur = ne_transpose(ctx0, ne_reshape_2d(ctx0, Vcur, head_size * n_head_kv, N));
+    //   Vcur = ne_transpose(ctx0, ne_reshape_2d(ctx0, Vcur, head_size * n_head_kv, N));
     }
     ne_set_name(Qcur, "Qcur");
     ne_set_name(Kcur, "Kcur");
     ne_set_name(Vcur, "Vcur");
+
     // self-attention
     const float attn_scale = 1.0f / sqrtf(static_cast<float>(head_size));
     struct ne_tensor* KQV_merged_contiguous =
@@ -552,16 +558,11 @@ static bool llama_model_eval_internal(model_context* ctx, const model_input* inp
     // embeddings = inpL;
   }
 
-  // lm_head
-  // inpL = ne_mul_mat(ctx0, model.others[2], inpL);
-
   lctx.use_buf(ctx0, -1);
-
-  // logits -> probs
-  // inpL = ne_soft_max_inplace(ctx0, inpL);
-
+  
   // run the computation
   ne_build_forward_expand(&gf, inpL);
+
   ne_graph_compute(ctx0, &gf);
 
   if (ns_log_level() == 0 || ns_log_level() == 2) {
@@ -574,38 +575,9 @@ static bool llama_model_eval_internal(model_context* ctx, const model_input* inp
   // extract last hidden states
   {
     auto& hidden_states_out = lctx.last_hidden_states;
-
     hidden_states_out.resize(n_embd * seq_len_sum);
     memcpy(hidden_states_out.data(), reinterpret_cast<float*>(ne_get_data(inpL)), sizeof(float) * n_embd * seq_len_sum);
   }
-
-  // extract logits
-//   {
-//     auto& logits_out = lctx.logits;
-
-//     if (lctx.logits_all) {
-//       logits_out.resize(n_vocab * seq_len_sum);
-//       memcpy(logits_out.data(), reinterpret_cast<float*>(ne_get_data(inpL)), sizeof(float) * n_vocab * seq_len_sum);
-//     } else {
-//       // return result for just the last token
-//       logits_out.resize(n_vocab * batch_size);
-// #pragma omp parallel for
-//       for (int i = 0; i < batch_size; ++i) {
-//         size_t bs_off = std::accumulate(n_tokens.begin(), n_tokens.begin() + i, 0) * n_vocab;
-//         memcpy(logits_out.data() + (i * n_vocab),
-//                reinterpret_cast<float*>(ne_get_data(inpL)) + bs_off + (n_vocab * (n_tokens[i] - 1)),
-//                sizeof(float) * n_vocab);
-//       }
-//     }
-//   }
-  // extract embeddings
-  // if (!lctx.embedding.empty()) {
-  //   auto& embedding_out = lctx.embedding;
-
-  //   embedding_out.resize(n_embd);
-  //   memcpy(embedding_out.data(), reinterpret_cast<float*>(ne_get_data(embeddings)) + (n_embd * (N - 1)),
-  //          sizeof(float) * n_embd);
-  // }
 
   if (mem_per_token == 0) {
     mem_per_token = ne_used_mem(ctx0) / N;
@@ -613,16 +585,16 @@ static bool llama_model_eval_internal(model_context* ctx, const model_input* inp
 
   ne_free(ctx0);
 
-  // measure the performance only for the single-token evals
-  int64_t time_interval = ne_time_us() - t_start_us;
-  if (N == 1) {
-    lctx.t_eval_us += time_interval;
-    lctx.n_eval++;
-  } else if (N > 1) {
-    lctx.t_p_eval_us += time_interval;
-    lctx.n_p_eval += N;
-  }
-  lctx.eval_times.push_back(time_interval);
+  // // measure the performance only for the single-token evals
+  // int64_t time_interval = ne_time_us() - t_start_us;
+  // if (N == 1) {
+  //   lctx.t_eval_us += time_interval;
+  //   lctx.n_eval++;
+  // } else if (N > 1) {
+  //   lctx.t_p_eval_us += time_interval;
+  //   lctx.n_p_eval += N;
+  // }
+  // lctx.eval_times.push_back(time_interval);
 
   return true;
 }

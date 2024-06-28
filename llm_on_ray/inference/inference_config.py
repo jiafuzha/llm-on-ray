@@ -56,7 +56,10 @@ class Ipex(BaseModel):
 
 class Vllm(BaseModel):
     enabled: bool = False
+    max_num_seqs: int = 256
+    max_batched_tokens: int = 4096
     precision: str = "bf16"
+    enforce_eager: bool = False
     extension: str = None
 
     @validator("precision")
@@ -64,11 +67,23 @@ class Vllm(BaseModel):
         if v:
             assert v in [PRECISION_BF16, PRECISION_FP32]
         return v
-    
+
     @validator("extension")
     def _check_extension(cls, v: str):
         if v:
             assert v in ["ns"]
+        return v
+
+    @validator("max_num_seqs")
+    def _check_max_num_seqs(cls, v: int):
+        if v:
+            assert v > 0
+        return v
+
+    @validator("max_batched_tokens")
+    def _check_max_batched_tokens(cls, v: int):
+        if v:
+            assert v > 32
         return v
 
 
@@ -139,8 +154,22 @@ class ModelDescription(BaseModel):
     @validator("peft_type")
     def _check_perftype(cls, v: str):
         if v:
-            assert v in ["lora", "adalora", "deltatuner"]
+            assert v in ["lora", "adalora"]
         return v
+
+
+class AutoscalingConfig(BaseModel):
+    min_replicas: int = 1
+    initial_replicas: int = 1
+    max_replicas: int = 1
+    target_ongoing_requests: float = 1.0
+    metrics_interval_s: float = 10.0
+    look_back_period_s: float = 30.0
+    smoothing_factor: float = 1.0
+    upscaling_factor: Union[float, None] = None
+    downscaling_factor: Union[float, None] = None
+    downscale_delay_s: float = 600.0
+    upscale_delay_s: float = 30.0
 
 
 class InferenceConfig(BaseModel):
@@ -148,7 +177,10 @@ class InferenceConfig(BaseModel):
     port: int = 8000
     name: str = "default"
     route_prefix: Union[str, None] = None
-    num_replicas: int = 1
+    dynamic_max_batch_size: int = 8
+    num_replicas: Union[int, None] = None
+    max_ongoing_requests: int = 100
+    autoscaling_config: Union[AutoscalingConfig, None] = None
     cpus_per_worker: int = 24
     gpus_per_worker: int = 0
     hpus_per_worker: int = 0
