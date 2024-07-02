@@ -60,6 +60,7 @@ if hasattr(faulthandler, "register") and hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1)
 
 NDArray: "TypeAlias" = "np.ndarray[Any, Any]"
+llama3_vocab_size = 128256
 
 
 @dataclass(frozen=True)
@@ -1142,6 +1143,7 @@ def check_vocab_size(params: Params, vocab: Vocab) -> None:
 class OutputFile:
     def __init__(self, fname_out: Path) -> None:
         self.fout = open(fname_out, "wb")
+        self.vocab_size = None
 
     def write_file_header(self, params: Params, file_type: NEFileType) -> None:
         self.fout.write(b"ggjt"[::-1])  # magic
@@ -1156,6 +1158,7 @@ class OutputFile:
             params.n_embd // params.n_head,  # rot (obsolete)
             file_type.value,
         ]
+        self.vocab_size = params.n_vocab
         self.fout.write(struct.pack("i" * len(values), *values))
         self.fout.write(struct.pack("i", 0))
         self.fout.write(struct.pack("f", 0))
@@ -1194,10 +1197,18 @@ class OutputFile:
         self.fout.seek((self.fout.tell() + 31) & -32)
 
     def write_vocab(self, vocab: Vocab) -> None:
-        for text, score in vocab.all_tokens():
-            self.fout.write(struct.pack("i", len(text)))
-            self.fout.write(text)
-            self.fout.write(struct.pack("f", score))
+        if self.vocab_size == llama3_vocab_size:
+            for text, score in vocab.all_tokens():
+                if isinstance(text, str):
+                    text = text.encode("utf-8")
+                self.fout.write(struct.pack("i", len(text)))
+                self.fout.write(text)
+                self.fout.write(struct.pack("f", score))
+        else:
+            for text, score in vocab.all_tokens():
+                self.fout.write(struct.pack("i", len(text)))
+                self.fout.write(text)
+                self.fout.write(struct.pack("f", score))
 
     @staticmethod
     def write_vocab_only(fname_out: Path, vocab: Vocab) -> None:
@@ -1566,6 +1577,11 @@ def main(args_in: Optional[List[str]] = None) -> None:
         choices=["NE", "GGUF"],
         help="convert to the GGUF or NE format",
     )
+    parser.add_argument(
+        "--vocab-type",
+        help="vocab types to try in order, choose from 'spm', 'bpe', 'hfft' (default: spm,hfft)",
+        default="spm,hfft",
+    )
     args = parser.parse_args(args_in)
     vocab: Vocab
     if args.dump_single:
@@ -1591,8 +1607,14 @@ def main(args_in: Optional[List[str]] = None) -> None:
                 str(args.model), low_cpu_mem_usage=True, trust_remote_code=True
             )
             tokenizer = AutoTokenizer.from_pretrained(str(args.model), trust_remote_code=True)
-            cache_path = Path(tokenizer.vocab_file).parent
-            args.model = cache_path
+            if hasattr(tokenizer, "vocab_file"):
+                cache_path = Path(tokenizer.vocab_file).parent
+                args.model = cache_path
+            else:
+                from transformers.utils import cached_file
+
+                tokenizer_path = cached_file(args.model, "tokenizer.json")
+                args.model = Path(tokenizer_path).parent
 
         model_plus = load_some_model(args.model)
         if args.dump:
@@ -1604,8 +1626,15 @@ def main(args_in: Optional[List[str]] = None) -> None:
         if model_plus.vocab is not None and args.vocab_dir is None:
             vocab = model_plus.vocab
         else:
-            vocab_dir = args.vocab_dir if args.vocab_dir else model_plus.paths[0].parent
-            vocab = load_vocab(vocab_dir, params.n_vocab)
+            if params.n_vocab == llama3_vocab_size:
+                # Llama3
+                from common import BpeVocab
+
+                vocab_dir = args.vocab_dir if args.vocab_dir else model_plus.paths[0].parent
+                vocab = BpeVocab(Path(vocab_dir))
+            else:
+                vocab_dir = args.vocab_dir if args.vocab_dir else model_plus.paths[0].parent
+                vocab = load_vocab(vocab_dir, params.n_vocab)
         model = do_necessary_conversions(model, params)
         output_type = pick_output_type(model, args.outtype)
         model = convert_to_output_type(model, output_type)
