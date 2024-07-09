@@ -34,10 +34,13 @@ struct model_params {
   int n_layers;
   int32_t seed = -1;  // RNG seed
   int32_t n_threads = get_num_physical_cores();
+  int32_t n_threads_next = n_threads;
   int32_t n_predict = -1;  // new tokens to predict
   int32_t n_ctx = 512;     // context size
 
   int32_t max_batch_size = 512;     // batch size for prompt processing (must be >=32 to use BLAS)
+
+  int32_t max_prompt_tokens = 8192; // max number of prompt tokens to decode in one run. split if exceeds this length
 
   std::string model = "";  // model path
 
